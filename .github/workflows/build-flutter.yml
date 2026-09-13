@@ -63,19 +63,35 @@ jobs:
         # PENTING: bot ini dipake buat build project BEDA-BEDA dari banyak
         # user — versi Gradle di tiap project upload-an bisa aja ketinggalan
         # dari yang dibutuhin Flutter versi terbaru ("stable" di atas selalu
-        # update). Daripada hardcode 1 angka versi (yang bakal ketinggalan
-        # lagi cepat atau lambat begitu Flutter naikin syarat minimumnya),
-        # di sini AMBIL VERSI GRADLE TERBARU langsung dari API resmi Gradle
-        # tiap kali build jalan — jadi SELALU up-to-date otomatis, gak perlu
-        # ganti angka di file ini lagi ke depannya.
+        # update). Di sini LANGSUNG edit file gradle-wrapper.properties-nya
+        # (bukan jalanin `./gradlew wrapper`) — soalnya kalau pake cara
+        # `./gradlew wrapper`, itu BUTUH gradle versi LAMA jalan duluan buat
+        # eksekusi task wrapper-nya, dan kalau gradle lama itu udah
+        # bermasalah/gak kompatibel, perintahnya bisa gagal DIAM-DIAM.
+        # Edit teks langsung ke file-nya jauh lebih pasti jalan.
         if: steps.parse.outputs.mode == 'zip'
-        working-directory: ${{ steps.findproj.outputs.dir }}/android
+        working-directory: ${{ steps.findproj.outputs.dir }}
         run: |
-          if [ -f gradlew ]; then
-            chmod +x gradlew
+          GWP="android/gradle/wrapper/gradle-wrapper.properties"
+          if [ -f "$GWP" ]; then
+            echo "=== distributionUrl SEBELUM ==="
+            grep "distributionUrl" "$GWP" || echo "(gak ketemu baris distributionUrl)"
+
             LATEST_GRADLE=$(curl -s https://services.gradle.org/versions/current | jq -r '.version')
+            if [ -z "$LATEST_GRADLE" ] || [ "$LATEST_GRADLE" == "null" ]; then
+              echo "::error::Gagal ambil versi Gradle terbaru dari services.gradle.org — cek koneksi/API-nya."
+              exit 1
+            fi
             echo "Gradle versi terbaru: $LATEST_GRADLE"
-            ./gradlew wrapper --gradle-version="$LATEST_GRADLE" --distribution-type=all || true
+
+            grep -v "^distributionUrl=" "$GWP" > /tmp/gwp.tmp
+            echo "distributionUrl=https\\://services.gradle.org/distributions/gradle-${LATEST_GRADLE}-all.zip" >> /tmp/gwp.tmp
+            mv /tmp/gwp.tmp "$GWP"
+
+            echo "=== distributionUrl SESUDAH ==="
+            grep "distributionUrl" "$GWP"
+          else
+            echo "::warning::File $GWP gak ketemu — kemungkinan project ini gak punya folder android/ standar. Skip upgrade Gradle."
           fi
 
       - name: Flutter pub get
