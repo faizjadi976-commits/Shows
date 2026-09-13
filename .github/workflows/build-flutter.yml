@@ -94,6 +94,53 @@ jobs:
             echo "::warning::File $GWP gak ketemu — kemungkinan project ini gak punya folder android/ standar. Skip upgrade Gradle."
           fi
 
+      - name: Upgrade Android Gradle Plugin (AGP) ke versi TERBARU (otomatis)
+        # SATU PAKET sama step upgrade Gradle di atas — Flutter nentuin batas
+        # minimum GRADLE *dan* AGP secara terpisah, jadi keduanya perlu
+        # di-upgrade bareng biar gak keulang lagi kena galat versi kayak gini.
+        # Ambil versi AGP terbaru langsung dari Google Maven (bukan angka
+        # hardcode), terus ganti versi lama di file manapun dia disebutin —
+        # bisa di settings.gradle(.kts) (template baru) ATAU build.gradle(.kts)
+        # (template lama), Kotlin DSL atau Groovy, semua dicoba.
+        if: steps.parse.outputs.mode == 'zip'
+        working-directory: ${{ steps.findproj.outputs.dir }}/android
+        run: |
+          LATEST_AGP=$(curl -s https://dl.google.com/android/maven2/com/android/tools/build/gradle/maven-metadata.xml | grep -oP '(?<=<release>)[^<]+')
+          if [ -z "$LATEST_AGP" ]; then
+            echo "::error::Gagal ambil versi AGP terbaru dari Google Maven — cek koneksi/API-nya."
+            exit 1
+          fi
+          echo "AGP versi terbaru: $LATEST_AGP"
+
+          python3 << PYEOF
+          import re, glob
+
+          latest_agp = "$LATEST_AGP"
+          candidates = glob.glob("settings.gradle*") + glob.glob("build.gradle*") + glob.glob("app/build.gradle*")
+          patterns = [
+              (r'(id\(["\']com\.android\.application["\']\)\s+version\s+["\'])[\d.]+(["\'])', rf'\g<1>{latest_agp}\g<2>'),
+              (r'(id\s+["\']com\.android\.application["\']\s+version\s+["\'])[\d.]+(["\'])', rf'\g<1>{latest_agp}\g<2>'),
+              (r'(classpath\(["\']com\.android\.tools\.build:gradle:)[\d.]+(["\']\))', rf'\g<1>{latest_agp}\g<2>'),
+              (r'(classpath\s+["\']com\.android\.tools\.build:gradle:)[\d.]+(["\'])', rf'\g<1>{latest_agp}\g<2>'),
+          ]
+
+          changed_any = False
+          for path in candidates:
+              with open(path, "r") as f:
+                  content = f.read()
+              original = content
+              for pat, repl in patterns:
+                  content = re.sub(pat, repl, content)
+              if content != original:
+                  with open(path, "w") as f:
+                      f.write(content)
+                  print(f"✅ AGP di-upgrade di: {path}")
+                  changed_any = True
+
+          if not changed_any:
+              print("⚠️ Gak ketemu baris versi AGP di file manapun — mungkin project pake struktur beda, skip (build lanjut apa adanya).")
+          PYEOF
+
       - name: Flutter pub get
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: flutter pub get
