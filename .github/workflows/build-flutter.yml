@@ -59,6 +59,25 @@ jobs:
         with:
           channel: 'stable'
 
+      - name: Upgrade Gradle wrapper ke versi TERBARU (otomatis, gak perlu update manual)
+        # PENTING: bot ini dipake buat build project BEDA-BEDA dari banyak
+        # user — versi Gradle di tiap project upload-an bisa aja ketinggalan
+        # dari yang dibutuhin Flutter versi terbaru ("stable" di atas selalu
+        # update). Daripada hardcode 1 angka versi (yang bakal ketinggalan
+        # lagi cepat atau lambat begitu Flutter naikin syarat minimumnya),
+        # di sini AMBIL VERSI GRADLE TERBARU langsung dari API resmi Gradle
+        # tiap kali build jalan — jadi SELALU up-to-date otomatis, gak perlu
+        # ganti angka di file ini lagi ke depannya.
+        if: steps.parse.outputs.mode == 'zip'
+        working-directory: ${{ steps.findproj.outputs.dir }}/android
+        run: |
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            LATEST_GRADLE=$(curl -s https://services.gradle.org/versions/current | jq -r '.version')
+            echo "Gradle versi terbaru: $LATEST_GRADLE"
+            ./gradlew wrapper --gradle-version="$LATEST_GRADLE" --distribution-type=all || true
+          fi
+
       - name: Flutter pub get
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: flutter pub get
