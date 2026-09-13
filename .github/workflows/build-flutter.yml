@@ -1,0 +1,81 @@
+name: Build Flutter APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobId:
+        description: 'Job ID unik dari bot'
+        required: true
+      userId:
+        description: 'User ID (opsional, dari bot)'
+        required: false
+      payload:
+        description: 'JSON payload (mode, url, buildType, tag)'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Parse payload dari bot
+        id: parse
+        run: |
+          echo '${{ github.event.inputs.payload }}' > payload.json
+          MODE=$(jq -r '.mode' payload.json)
+          URL=$(jq -r '.url' payload.json)
+          BUILD_TYPE=$(jq -r '.buildType // "release"' payload.json)
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "build_type=$BUILD_TYPE" >> "$GITHUB_OUTPUT"
+
+      - name: Download & extract source ZIP dari bot
+        if: steps.parse.outputs.mode == 'zip'
+        run: |
+          curl -L "${{ steps.parse.outputs.url }}" -o source.zip
+          mkdir -p project
+          unzip -q source.zip -d project
+
+      - name: Cari folder project Flutter (jaga-jaga kalau ke-nested di subfolder)
+        if: steps.parse.outputs.mode == 'zip'
+        id: findproj
+        run: |
+          PUBSPEC=$(find project -maxdepth 4 -iname "pubspec.yaml" | head -1)
+          if [ -z "$PUBSPEC" ]; then
+            echo "::error::pubspec.yaml gak ketemu di dalam ZIP — pastiin yang di-zip itu ROOT folder project Flutter (bukan folder di dalemnya lagi)."
+            exit 1
+          fi
+          PROJDIR=$(dirname "$PUBSPEC")
+          echo "dir=$PROJDIR" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Flutter pub get
+        working-directory: ${{ steps.findproj.outputs.dir }}
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: ${{ steps.findproj.outputs.dir }}
+        run: |
+          if [ "${{ steps.parse.outputs.build_type }}" == "debug" ]; then
+            flutter build apk --debug
+          else
+            flutter build apk --release
+          fi
+
+      - name: Upload APK sebagai artifact (dibaca balik sama bot)
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ github.event.inputs.jobId }}
+          path: ${{ steps.findproj.outputs.dir }}/build/app/outputs/flutter-apk/*.apk
+          retention-days: 1
+          if-no-files-found: error
