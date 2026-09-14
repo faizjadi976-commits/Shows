@@ -114,6 +114,122 @@ jobs:
         # dari Google Maven (AGP) & Maven Central (Kotlin) — bukan angka
         # hardcode — terus ganti versi lama di file manapun dia disebutin,
         # baik di settings.gradle(.kts) (template baru) ATAU build.gradle(.kts)
+name: Build Flutter APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobId:
+        description: 'Job ID unik dari bot'
+        required: true
+      userId:
+        description: 'User ID (opsional, dari bot)'
+        required: false
+      payload:
+        description: 'JSON payload (mode, url, buildType, tag)'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Parse payload dari bot
+        id: parse
+        run: |
+          echo '${{ github.event.inputs.payload }}' > payload.json
+          MODE=$(jq -r '.mode' payload.json)
+          URL=$(jq -r '.url' payload.json)
+          BUILD_TYPE=$(jq -r '.buildType // "release"' payload.json)
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "build_type=$BUILD_TYPE" >> "$GITHUB_OUTPUT"
+
+      - name: Download & extract source ZIP dari bot
+        if: steps.parse.outputs.mode == 'zip'
+        run: |
+          curl -L "${{ steps.parse.outputs.url }}" -o source.zip
+          mkdir -p project
+          unzip -q source.zip -d project
+
+      - name: Cari folder project Flutter (jaga-jaga kalau ke-nested di subfolder)
+        if: steps.parse.outputs.mode == 'zip'
+        id: findproj
+        run: |
+          PUBSPEC=$(find project -maxdepth 4 -iname "pubspec.yaml" | head -1)
+          if [ -z "$PUBSPEC" ]; then
+            echo "::error::pubspec.yaml gak ketemu di dalam ZIP — pastiin yang di-zip itu ROOT folder project Flutter (bukan folder di dalemnya lagi)."
+            exit 1
+          fi
+          PROJDIR=$(dirname "$PUBSPEC")
+          echo "dir=$PROJDIR" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Upgrade Gradle wrapper ke versi TERBARU (otomatis, gak perlu update manual)
+        # PENTING: bot ini dipake buat build project BEDA-BEDA dari banyak
+        # user — versi Gradle di tiap project upload-an bisa aja ketinggalan
+        # dari yang dibutuhin Flutter versi terbaru ("stable" di atas selalu
+        # update). Di sini LANGSUNG edit file gradle-wrapper.properties-nya
+        # (bukan jalanin `./gradlew wrapper`) — soalnya kalau pake cara
+        # `./gradlew wrapper`, itu BUTUH gradle versi LAMA jalan duluan buat
+        # eksekusi task wrapper-nya, dan kalau gradle lama itu udah
+        # bermasalah/gak kompatibel, perintahnya bisa gagal DIAM-DIAM.
+        # Edit teks langsung ke file-nya jauh lebih pasti jalan.
+        if: steps.parse.outputs.mode == 'zip'
+        working-directory: ${{ steps.findproj.outputs.dir }}
+        run: |
+          GWP="android/gradle/wrapper/gradle-wrapper.properties"
+          if [ -f "$GWP" ]; then
+            echo "=== distributionUrl SEBELUM ==="
+            grep "distributionUrl" "$GWP" || echo "(gak ketemu baris distributionUrl)"
+
+            # PENTING: Gradle DAN AGP (step berikutnya) SENGAJA di-cap di
+            # versi 8.x DUA-DUANYA — bukan cuma AGP doang. Alasannya: AGP 8.x
+            # internally makai beberapa API Gradle yang DIHAPUS di Gradle 9.0
+            # ("com.android.internal.application relies on ...InternalProblems,
+            # a Gradle internal API removed in 9.0") — jadi kalau Gradle-nya
+            # dipaksa ke versi 9.x tapi AGP-nya masih 8.x (biar DSL lama masih
+            # kepake), build tetep gagal, cuma pindah titik gagalnya doang.
+            # Solusinya: DUA-DUANYA ditahan di generasi 8.x yang SALING
+            # KOMPATIBEL — bukan masing-masing independen ngejar "paling baru".
+            LATEST_GRADLE=$(curl -s https://services.gradle.org/versions/all \
+              | jq -r '.[] | select(.snapshot==false and .nightly==false and .releaseNightly==false and .activeRc==false and (.version | test("^8\\.[0-9]+(\\.[0-9]+)?$"))) | .version' \
+              | sort -t. -k1,1n -k2,2n -k3,3n \
+              | tail -1)
+            if [ -z "$LATEST_GRADLE" ] || [ "$LATEST_GRADLE" == "null" ]; then
+              echo "::error::Gagal ambil versi Gradle 8.x terbaru dari services.gradle.org — cek koneksi/API-nya."
+              exit 1
+            fi
+            echo "Gradle 8.x versi terbaru: $LATEST_GRADLE"
+
+            grep -v "^distributionUrl=" "$GWP" > /tmp/gwp.tmp
+            echo "distributionUrl=https\\://services.gradle.org/distributions/gradle-${LATEST_GRADLE}-all.zip" >> /tmp/gwp.tmp
+            mv /tmp/gwp.tmp "$GWP"
+
+            echo "=== distributionUrl SESUDAH ==="
+            grep "distributionUrl" "$GWP"
+          else
+            echo "::warning::File $GWP gak ketemu — kemungkinan project ini gak punya folder android/ standar. Skip upgrade Gradle."
+          fi
+
+      - name: Upgrade Android Gradle Plugin (AGP) & Kotlin ke versi TERBARU (otomatis)
+        # SATU PAKET sama step upgrade Gradle di atas — Flutter nentuin batas
+        # minimum GRADLE, AGP, *dan* KOTLIN secara terpisah-pisah, jadi
+        # ketiganya perlu di-upgrade bareng biar gak keulang lagi kena galat
+        # versi satu-satu kayak kemarin-kemarin. Ambil versi terbaru langsung
+        # dari Google Maven (AGP) & Maven Central (Kotlin) — bukan angka
+        # hardcode — terus ganti versi lama di file manapun dia disebutin,
+        # baik di settings.gradle(.kts) (template baru) ATAU build.gradle(.kts)
         # (template lama), Kotlin DSL atau Groovy, semua dicoba.
         if: steps.parse.outputs.mode == 'zip'
         working-directory: ${{ steps.findproj.outputs.dir }}/android
@@ -137,12 +253,27 @@ jobs:
           fi
           echo "AGP versi terbaru: $LATEST_AGP"
 
-          LATEST_KOTLIN=$(curl -s https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin/maven-metadata.xml | grep -oP '(?<=<release>)[^<]+')
+          # PENTING: sama kayak Gradle & AGP di atas, Kotlin JUGA di-cap —
+          # bukan diambil "paling baru mutlak", tapi versi TERBARU DI DALEM
+          # SERI YANG SAMA PERSIS dengan minimum yang diminta Flutter (contoh
+          # laporan Flutter: minimum 2.2.20 → dicap ke seri 2.2.x, BUKAN
+          # dibiarin lompat ke 2.3.x+). Alasannya: rilis Kotlin yang lebih
+          # baru dari seri yang diminta Flutter bisa aja udah mulai
+          # nge-enforce DSL baru (compilerOptions) secara KETAT, bikin cara
+          # nulis lama (`kotlinOptions { jvmTarget = "..." }`) yang dipake
+          # HAMPIR SEMUA project Flutter existing jadi ERROR, bukan cuma
+          # warning — persis kejadian kayak kasus AGP 9.0 kemarin.
+          KOTLIN_MIN_SERIES="2.2"
+          LATEST_KOTLIN=$(curl -s https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin/maven-metadata.xml \
+            | grep -oP '(?<=<version>)[^<]+' \
+            | grep -E "^${KOTLIN_MIN_SERIES}\.[0-9]+$" \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+            | tail -1)
           if [ -z "$LATEST_KOTLIN" ]; then
-            echo "::error::Gagal ambil versi Kotlin terbaru dari Maven Central — cek koneksi/API-nya."
+            echo "::error::Gagal ambil versi Kotlin ${KOTLIN_MIN_SERIES}.x terbaru dari Maven Central — cek koneksi/API-nya."
             exit 1
           fi
-          echo "Kotlin versi terbaru: $LATEST_KOTLIN"
+          echo "Kotlin ${KOTLIN_MIN_SERIES}.x versi terbaru: $LATEST_KOTLIN"
 
           python3 << PYEOF
           import re, glob
@@ -211,4 +342,3 @@ jobs:
           path: ${{ steps.findproj.outputs.dir }}/build/app/outputs/flutter-apk/*.apk
           retention-days: 1
           if-no-files-found: error
-
