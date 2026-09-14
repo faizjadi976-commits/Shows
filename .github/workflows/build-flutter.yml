@@ -193,6 +193,65 @@ jobs:
               print("⚠️ Gak ketemu baris versi AGP/Kotlin di file manapun — mungkin project pake struktur beda, skip (build lanjut apa adanya).")
           PYEOF
 
+      - name: Lepas SEMUA batasan versi package di pubspec.yaml
+        # INI PERBAIKAN PALING MENYELURUH: daripada nyusul satu-satu tiap ada
+        # package yang ketinggalan (font_awesome_flutter, dst — bisa kejadian
+        # ke package LAIN juga di base project yang beda), di sini LANGSUNG
+        # dilepas SEMUA batasan versi di pubspec.yaml (^X.Y.Z / ">=X.Y.Z
+        # <A.B.C" / dll diganti jadi "any") — biar `pub get` BEBAS milih versi
+        # PALING BARU & PALING KOMPATIBEL buat SEMUA package, apapun batasan
+        # asli yang ditulis programmer project-nya (yang mungkin emang ketulis
+        # pas project itu dibuat, udah lama, dan gak pernah diapdet lagi).
+        #
+        # AMAN buat: dependency biasa ("pkg: ^1.2.3", "pkg: '>=1.0 <2.0'").
+        # DIBIARIN APA ADANYA (gak disentuh): "sdk: flutter" (flutter/
+        # flutter_test SDK bawaan), dependency dari git/path (formatnya beda,
+        # bukan angka versi), dan baris "sdk:" di section environment: (biar
+        # batas minimum Dart SDK-nya sendiri gak ikut kebablasan berubah).
+        if: steps.parse.outputs.mode == 'zip'
+        working-directory: ${{ steps.findproj.outputs.dir }}
+        run: |
+          python3 << PYEOF
+          import re
+
+          path = "pubspec.yaml"
+          with open(path) as f:
+              lines = f.readlines()
+
+          version_pattern = re.compile(
+              r'^(\s{2,4})([a-zA-Z0-9_]+):\s*[\'"]?([\^]?[><=]*\s*\d+\.\d+\.\d+[^\'"\n]*)[\'"]?\s*$'
+          )
+          skip_keys = {"sdk", "flutter"}
+
+          changed = 0
+          out_lines = []
+          in_environment = False
+          for line in lines:
+              stripped = line.rstrip("\n")
+              if stripped.strip() == "environment:":
+                  in_environment = True
+                  out_lines.append(line)
+                  continue
+              if stripped and not stripped.startswith(" ") and stripped.strip() != "environment:":
+                  in_environment = False
+
+              m = version_pattern.match(stripped)
+              if m and not in_environment:
+                  indent, key, _ = m.groups()
+                  if key in skip_keys:
+                      out_lines.append(line)
+                      continue
+                  out_lines.append(f"{indent}{key}: any\n")
+                  changed += 1
+              else:
+                  out_lines.append(line)
+
+          with open(path, "w") as f:
+              f.writelines(out_lines)
+
+          print(f"✅ {changed} batasan versi package dilepas jadi 'any'")
+          PYEOF
+
       - name: Hapus pubspec.lock lama & resolve dependency FRESH
         # PENTING: pubspec.lock yang ke-upload bareng project user itu
         # ke-pin ke versi package SAAT PROJECT-NYA DIBUAT (bisa udah lama
@@ -208,9 +267,23 @@ jobs:
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: rm -f pubspec.lock
 
-      - name: Flutter pub get (fresh resolve)
+      - name: Flutter pub get (fresh resolve, batasan udah dilepas)
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: flutter pub get
+
+      - name: Upgrade SEMUA package termasuk major version (jaring pengaman tambahan)
+        # PENTING: `flutter pub get` doang CUMA boleh naik versi package
+        # SELAMA masih sesuai batas yang ditulis di pubspec.yaml (misal
+        # "^10.0.0" artinya CUMA boleh naik sampe versi 10.x, gak boleh ke
+        # 11.x walau 11.x itu yang beneran ngebenerin masalah kompatibilitas
+        # kayak font_awesome_flutter vs IconData final). `pub upgrade
+        # --major-versions` maksa cek & naikin ke major version TERBARU yang
+        # available kalau perlu, ngelewatin batasan lama di pubspec.yaml.
+        # `|| true` di sini SENGAJA: kalau upgrade ini gagal/gak ada yang
+        # bisa dinaikin, build tetep lanjut pake hasil dari `pub get` biasa.
+        if: steps.parse.outputs.mode == 'zip'
+        working-directory: ${{ steps.findproj.outputs.dir }}
+        run: flutter pub upgrade --major-versions || true
 
       - name: Build APK
         working-directory: ${{ steps.findproj.outputs.dir }}
@@ -241,4 +314,3 @@ jobs:
           path: ${{ steps.findproj.outputs.dir }}/build/app/outputs/flutter-apk/*.apk
           retention-days: 1
           if-no-files-found: error
-
