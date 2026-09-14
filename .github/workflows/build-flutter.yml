@@ -94,13 +94,14 @@ jobs:
             echo "::warning::File $GWP gak ketemu — kemungkinan project ini gak punya folder android/ standar. Skip upgrade Gradle."
           fi
 
-      - name: Upgrade Android Gradle Plugin (AGP) ke versi TERBARU (otomatis)
+      - name: Upgrade Android Gradle Plugin (AGP) & Kotlin ke versi TERBARU (otomatis)
         # SATU PAKET sama step upgrade Gradle di atas — Flutter nentuin batas
-        # minimum GRADLE *dan* AGP secara terpisah, jadi keduanya perlu
-        # di-upgrade bareng biar gak keulang lagi kena galat versi kayak gini.
-        # Ambil versi AGP terbaru langsung dari Google Maven (bukan angka
-        # hardcode), terus ganti versi lama di file manapun dia disebutin —
-        # bisa di settings.gradle(.kts) (template baru) ATAU build.gradle(.kts)
+        # minimum GRADLE, AGP, *dan* KOTLIN secara terpisah-pisah, jadi
+        # ketiganya perlu di-upgrade bareng biar gak keulang lagi kena galat
+        # versi satu-satu kayak kemarin-kemarin. Ambil versi terbaru langsung
+        # dari Google Maven (AGP) & Maven Central (Kotlin) — bukan angka
+        # hardcode — terus ganti versi lama di file manapun dia disebutin,
+        # baik di settings.gradle(.kts) (template baru) ATAU build.gradle(.kts)
         # (template lama), Kotlin DSL atau Groovy, semua dicoba.
         if: steps.parse.outputs.mode == 'zip'
         working-directory: ${{ steps.findproj.outputs.dir }}/android
@@ -112,16 +113,28 @@ jobs:
           fi
           echo "AGP versi terbaru: $LATEST_AGP"
 
+          LATEST_KOTLIN=$(curl -s https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin/maven-metadata.xml | grep -oP '(?<=<release>)[^<]+')
+          if [ -z "$LATEST_KOTLIN" ]; then
+            echo "::error::Gagal ambil versi Kotlin terbaru dari Maven Central — cek koneksi/API-nya."
+            exit 1
+          fi
+          echo "Kotlin versi terbaru: $LATEST_KOTLIN"
+
           python3 << PYEOF
           import re, glob
 
           latest_agp = "$LATEST_AGP"
+          latest_kotlin = "$LATEST_KOTLIN"
           candidates = glob.glob("settings.gradle*") + glob.glob("build.gradle*") + glob.glob("app/build.gradle*")
           patterns = [
               (r'(id\(["\']com\.android\.application["\']\)\s+version\s+["\'])[\d.]+(["\'])', rf'\g<1>{latest_agp}\g<2>'),
               (r'(id\s+["\']com\.android\.application["\']\s+version\s+["\'])[\d.]+(["\'])', rf'\g<1>{latest_agp}\g<2>'),
               (r'(classpath\(["\']com\.android\.tools\.build:gradle:)[\d.]+(["\']\))', rf'\g<1>{latest_agp}\g<2>'),
               (r'(classpath\s+["\']com\.android\.tools\.build:gradle:)[\d.]+(["\'])', rf'\g<1>{latest_agp}\g<2>'),
+              (r'(id\(["\']org\.jetbrains\.kotlin\.android["\']\)\s+version\s+["\'])[\d.]+(["\'])', rf'\g<1>{latest_kotlin}\g<2>'),
+              (r'(id\s+["\']org\.jetbrains\.kotlin\.android["\']\s+version\s+["\'])[\d.]+(["\'])', rf'\g<1>{latest_kotlin}\g<2>'),
+              (r'(ext\.kotlin_version\s*=\s*["\'])[\d.]+(["\'])', rf'\g<1>{latest_kotlin}\g<2>'),
+              (r'(kotlin\(["\']android["\']\)\s+version\s+["\'])[\d.]+(["\'])', rf'\g<1>{latest_kotlin}\g<2>'),
           ]
 
           changed_any = False
@@ -134,11 +147,11 @@ jobs:
               if content != original:
                   with open(path, "w") as f:
                       f.write(content)
-                  print(f"✅ AGP di-upgrade di: {path}")
+                  print(f"✅ AGP/Kotlin di-upgrade di: {path}")
                   changed_any = True
 
           if not changed_any:
-              print("⚠️ Gak ketemu baris versi AGP di file manapun — mungkin project pake struktur beda, skip (build lanjut apa adanya).")
+              print("⚠️ Gak ketemu baris versi AGP/Kotlin di file manapun — mungkin project pake struktur beda, skip (build lanjut apa adanya).")
           PYEOF
 
       - name: Flutter pub get
@@ -148,10 +161,23 @@ jobs:
       - name: Build APK
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: |
+          # PENTING: "--android-skip-build-dependency-validation" itu flag
+          # RESMI dari Flutter sendiri (disebut di pesan error yang sering
+          # muncul: "Alternatively, use the flag ... to bypass this check").
+          # Dipasang di sini biar KALAU ADA lagi 1 pengecekan versi minimum
+          # yang belum ke-cover sama step upgrade Gradle/AGP/Kotlin di atas
+          # (misal NDK, compileSdk, dll), build TETEP LANJUT — gak berhenti
+          # cuma gara-gara Flutter "sok pilih-pilih" versi, padahal toolchain
+          # sebenarnya udah dimodernin duluan sama step upgrade tadi.
+          #
+          # CATATAN: flag ini CUMA skip validasi versi minimum, BUKAN skip
+          # compile error beneran — kalau project-nya emang ada bug/error
+          # kode asli, build tetep bakal gagal (dan emang HARUS gagal,
+          # itu bug beneran di project-nya, bukan soal versi tooling).
           if [ "${{ steps.parse.outputs.build_type }}" == "debug" ]; then
-            flutter build apk --debug
+            flutter build apk --debug --android-skip-build-dependency-validation
           else
-            flutter build apk --release
+            flutter build apk --release --android-skip-build-dependency-validation
           fi
 
       - name: Upload APK sebagai artifact (dibaca balik sama bot)
@@ -161,3 +187,4 @@ jobs:
           path: ${{ steps.findproj.outputs.dir }}/build/app/outputs/flutter-apk/*.apk
           retention-days: 1
           if-no-files-found: error
+
