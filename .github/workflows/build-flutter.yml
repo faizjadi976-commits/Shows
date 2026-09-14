@@ -106,7 +106,19 @@ jobs:
         if: steps.parse.outputs.mode == 'zip'
         working-directory: ${{ steps.findproj.outputs.dir }}/android
         run: |
-          LATEST_AGP=$(curl -s https://dl.google.com/android/maven2/com/android/tools/build/gradle/maven-metadata.xml | grep -oP '(?<=<release>)[^<]+')
+          # PENTING: SENGAJA gak ambil versi AGP paling mutlak terbaru (misal
+          # 9.x) — soalnya AGP 9.0 ke atas ngubah DEFAULT DSL ("newDsl=true"),
+          # dan itu bikin gaya penulisan build.gradle.kts LAMA (yang dipake
+          # HAMPIR SEMUA project Flutter existing — blok "android { }" &
+          # "kotlinOptions { }") jadi dianggap ERROR fatal, bukan cuma
+          # peringatan. Jadi diambil AGP versi 8.x PALING BARU aja (bukan 9+)
+          # — udah cukup modern buat Flutter, tapi masih kompatibel sama
+          # gaya penulisan lama yang dipake mayoritas project.
+          LATEST_AGP=$(curl -s https://dl.google.com/android/maven2/com/android/tools/build/gradle/maven-metadata.xml \
+            | grep -oP '(?<=<version>)[^<]+' \
+            | grep -E '^8\.[0-9]+\.[0-9]+$' \
+            | sort -t. -k1,1n -k2,2n -k3,3n \
+            | tail -1)
           if [ -z "$LATEST_AGP" ]; then
             echo "::error::Gagal ambil versi AGP terbaru dari Google Maven — cek koneksi/API-nya."
             exit 1
