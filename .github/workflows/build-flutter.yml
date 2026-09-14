@@ -77,12 +77,24 @@ jobs:
             echo "=== distributionUrl SEBELUM ==="
             grep "distributionUrl" "$GWP" || echo "(gak ketemu baris distributionUrl)"
 
-            LATEST_GRADLE=$(curl -s https://services.gradle.org/versions/current | jq -r '.version')
+            # PENTING: Gradle DAN AGP (step berikutnya) SENGAJA di-cap di
+            # versi 8.x DUA-DUANYA — bukan cuma AGP doang. Alasannya: AGP 8.x
+            # internally makai beberapa API Gradle yang DIHAPUS di Gradle 9.0
+            # ("com.android.internal.application relies on ...InternalProblems,
+            # a Gradle internal API removed in 9.0") — jadi kalau Gradle-nya
+            # dipaksa ke versi 9.x tapi AGP-nya masih 8.x (biar DSL lama masih
+            # kepake), build tetep gagal, cuma pindah titik gagalnya doang.
+            # Solusinya: DUA-DUANYA ditahan di generasi 8.x yang SALING
+            # KOMPATIBEL — bukan masing-masing independen ngejar "paling baru".
+            LATEST_GRADLE=$(curl -s https://services.gradle.org/versions/all \
+              | jq -r '.[] | select(.snapshot==false and .nightly==false and .releaseNightly==false and .activeRc==false and (.version | test("^8\\.[0-9]+(\\.[0-9]+)?$"))) | .version' \
+              | sort -t. -k1,1n -k2,2n -k3,3n \
+              | tail -1)
             if [ -z "$LATEST_GRADLE" ] || [ "$LATEST_GRADLE" == "null" ]; then
-              echo "::error::Gagal ambil versi Gradle terbaru dari services.gradle.org — cek koneksi/API-nya."
+              echo "::error::Gagal ambil versi Gradle 8.x terbaru dari services.gradle.org — cek koneksi/API-nya."
               exit 1
             fi
-            echo "Gradle versi terbaru: $LATEST_GRADLE"
+            echo "Gradle 8.x versi terbaru: $LATEST_GRADLE"
 
             grep -v "^distributionUrl=" "$GWP" > /tmp/gwp.tmp
             echo "distributionUrl=https\\://services.gradle.org/distributions/gradle-${LATEST_GRADLE}-all.zip" >> /tmp/gwp.tmp
