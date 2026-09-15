@@ -49,19 +49,26 @@ jobs:
           echo "dir=$PROJDIR" >> "$GITHUB_OUTPUT"
 
       - name: Ganti SEMUA icon FontAwesome ke icon Flutter bawaan
-        # PENTING: font_awesome_flutter versi 11.x (yang otomatis kepasang
-        # abis step "lepas batasan versi" narik versi terbaru) ngenalin tipe
-        # BARU "FaIconData" (beda dari "IconData" bawaan Flutter) — bikin
-        # kode yang nulis widget custom dengan parameter "IconData icon"
-        # (kayak "ContactButton({required IconData icon})") jadi gak
-        # kompatibel lagi sama "FontAwesomeIcons.xxx". Daripada mati-matian
-        # coba nyocokin ulang versi/tipe (yang bisa aja rusak di project lain
-        # yang strukturnya beda), SEMUA referensi FontAwesomeIcons.xxx
-        # diganti aja jadi ikon Flutter bawaan (Icons.help_outline — dijamin
-        # selalu ada & tipenya IconData biasa), dan FaIcon() ikut diganti
-        # jadi Icon() biasa. Icon yang tampil jadi beda visualnya, tapi
-        # project-nya PASTI bisa di-compile — dan ini otomatis kepake buat
-        # project APAPUN yang make font_awesome_flutter, gak cuma yang ini.
+        # PENTING: font_awesome_flutter versi 11.x (otomatis kepasang abis
+        # step "lepas batasan versi" narik versi terbaru) ngenalin tipe BARU
+        # "FaIconData" (beda dari "IconData" bawaan Flutter) — bikin kode
+        # yang nulis widget custom dengan parameter "IconData icon" jadi gak
+        # kompatibel lagi sama "FontAwesomeIcons.xxx". Daripada coba nyocokin
+        # ulang versi/tipe (beresiko rusak di project lain yang strukturnya
+        # beda), SEMUA referensi FontAwesomeIcons.xxx diganti jadi icon
+        # Flutter bawaan (Icons.help_outline — dijamin selalu ada & tipenya
+        # IconData biasa), FaIcon() diganti jadi Icon() biasa, dan import-nya
+        # dihapus.
+        #
+        # CATATAN PENTING (bug yang udah dibenerin): regex-nya pake `\s*` di
+        # antara "FontAwesomeIcons", ".", dan nama icon-nya — BUKAN cuma
+        # "FontAwesomeIcons\.\w+" tanpa spasi. Soalnya beberapa project nulis
+        # kodenya kepisah baris, misal:
+        #   FontAwesomeIcons
+        #       .whatsapp,
+        # Regex versi lama (tanpa \s*) GAK NANGKEP pola ini — importnya
+        # kehapus tapi teks "FontAwesomeIcons"-nya sendiri gak ke-ganti, jadi
+        # malah bikin error baru ("getter FontAwesomeIcons isn't defined").
         if: steps.parse.outputs.mode == 'zip'
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: |
@@ -74,7 +81,7 @@ jobs:
               with open(path, encoding="utf-8") as f:
                   content = f.read()
               original = content
-              content = re.sub(r'FontAwesomeIcons\.\w+', 'Icons.help_outline', content)
+              content = re.sub(r'FontAwesomeIcons\s*\.\s*\w+', 'Icons.help_outline', content)
               content = re.sub(r'\bFaIcon\(', 'Icon(', content)
               content = re.sub(r"^\s*import\s+['\"]package:font_awesome_flutter/font_awesome_flutter\.dart['\"];\s*\n", '', content, flags=re.M)
               if content != original:
@@ -97,15 +104,6 @@ jobs:
           channel: 'stable'
 
       - name: Upgrade Gradle wrapper ke versi TERBARU (otomatis, gak perlu update manual)
-        # PENTING: bot ini dipake buat build project BEDA-BEDA dari banyak
-        # user — versi Gradle di tiap project upload-an bisa aja ketinggalan
-        # dari yang dibutuhin Flutter versi terbaru ("stable" di atas selalu
-        # update). Di sini LANGSUNG edit file gradle-wrapper.properties-nya
-        # (bukan jalanin `./gradlew wrapper`) — soalnya kalau pake cara
-        # `./gradlew wrapper`, itu BUTUH gradle versi LAMA jalan duluan buat
-        # eksekusi task wrapper-nya, dan kalau gradle lama itu udah
-        # bermasalah/gak kompatibel, perintahnya bisa gagal DIAM-DIAM.
-        # Edit teks langsung ke file-nya jauh lebih pasti jalan.
         if: steps.parse.outputs.mode == 'zip'
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: |
@@ -115,14 +113,11 @@ jobs:
             grep "distributionUrl" "$GWP" || echo "(gak ketemu baris distributionUrl)"
 
             # PENTING: Gradle DAN AGP (step berikutnya) SENGAJA di-cap di
-            # versi 8.x DUA-DUANYA — bukan cuma AGP doang. Alasannya: AGP 8.x
-            # internally makai beberapa API Gradle yang DIHAPUS di Gradle 9.0
-            # ("com.android.internal.application relies on ...InternalProblems,
-            # a Gradle internal API removed in 9.0") — jadi kalau Gradle-nya
-            # dipaksa ke versi 9.x tapi AGP-nya masih 8.x (biar DSL lama masih
-            # kepake), build tetep gagal, cuma pindah titik gagalnya doang.
-            # Solusinya: DUA-DUANYA ditahan di generasi 8.x yang SALING
-            # KOMPATIBEL — bukan masing-masing independen ngejar "paling baru".
+            # versi 8.x DUA-DUANYA — bukan cuma AGP doang. AGP 8.x internally
+            # makai beberapa API Gradle yang DIHAPUS di Gradle 9.0, jadi
+            # kalau Gradle-nya dipaksa ke 9.x tapi AGP masih 8.x, build tetep
+            # gagal. Solusinya: DUA-DUANYA ditahan di generasi 8.x yang
+            # SALING KOMPATIBEL.
             LATEST_GRADLE=$(curl -s https://services.gradle.org/versions/all \
               | jq -r '.[] | select(.snapshot==false and .nightly==false and .releaseNightly==false and .activeRc==false and (.version | test("^8\\.[0-9]+(\\.[0-9]+)?$"))) | .version' \
               | sort -t. -k1,1n -k2,2n -k3,3n \
@@ -145,45 +140,27 @@ jobs:
 
       - name: Upgrade Android Gradle Plugin (AGP) & Kotlin ke versi TERBARU (otomatis)
         # SATU PAKET sama step upgrade Gradle di atas — Flutter nentuin batas
-        # minimum GRADLE, AGP, *dan* KOTLIN secara terpisah-pisah, jadi
-        # ketiganya perlu di-upgrade bareng biar gak keulang lagi kena galat
-        # versi satu-satu kayak kemarin-kemarin. Ambil versi terbaru langsung
-        # dari Google Maven (AGP) & Maven Central (Kotlin) — bukan angka
-        # hardcode — terus ganti versi lama di file manapun dia disebutin,
-        # baik di settings.gradle(.kts) (template baru) ATAU build.gradle(.kts)
-        # (template lama), Kotlin DSL atau Groovy, semua dicoba.
+        # minimum GRADLE, AGP, DAN KOTLIN secara terpisah-pisah. Ambil versi
+        # terbaru langsung dari Google Maven (AGP) & Maven Central (Kotlin) —
+        # tapi DUA-DUANYA DICAP biar gak kebablasan ke major version yang
+        # ngubah default DSL (AGP 9.0+ bikin gaya "android { }" lama jadi
+        # error, Kotlin versi abis 2.2.x bikin "kotlinOptions { jvmTarget =
+        # ... }" jadi error). Dicap ke seri PALING BARU yang masih 1 generasi
+        # sama minimum yang diminta Flutter, bukan mutlak "paling baru ada".
         if: steps.parse.outputs.mode == 'zip'
         working-directory: ${{ steps.findproj.outputs.dir }}/android
         run: |
-          # PENTING: SENGAJA gak ambil versi AGP paling mutlak terbaru (misal
-          # 9.x) — soalnya AGP 9.0 ke atas ngubah DEFAULT DSL ("newDsl=true"),
-          # dan itu bikin gaya penulisan build.gradle.kts LAMA (yang dipake
-          # HAMPIR SEMUA project Flutter existing — blok "android { }" &
-          # "kotlinOptions { }") jadi dianggap ERROR fatal, bukan cuma
-          # peringatan. Jadi diambil AGP versi 8.x PALING BARU aja (bukan 9+)
-          # — udah cukup modern buat Flutter, tapi masih kompatibel sama
-          # gaya penulisan lama yang dipake mayoritas project.
           LATEST_AGP=$(curl -s https://dl.google.com/android/maven2/com/android/tools/build/gradle/maven-metadata.xml \
             | grep -oP '(?<=<version>)[^<]+' \
             | grep -E '^8\.[0-9]+\.[0-9]+$' \
             | sort -t. -k1,1n -k2,2n -k3,3n \
             | tail -1)
           if [ -z "$LATEST_AGP" ]; then
-            echo "::error::Gagal ambil versi AGP terbaru dari Google Maven — cek koneksi/API-nya."
+            echo "::error::Gagal ambil versi AGP 8.x terbaru dari Google Maven — cek koneksi/API-nya."
             exit 1
           fi
-          echo "AGP versi terbaru: $LATEST_AGP"
+          echo "AGP 8.x versi terbaru: $LATEST_AGP"
 
-          # PENTING: sama kayak Gradle & AGP di atas, Kotlin JUGA di-cap —
-          # bukan diambil "paling baru mutlak", tapi versi TERBARU DI DALEM
-          # SERI YANG SAMA PERSIS dengan minimum yang diminta Flutter (contoh
-          # laporan Flutter: minimum 2.2.20 → dicap ke seri 2.2.x, BUKAN
-          # dibiarin lompat ke 2.3.x+). Alasannya: rilis Kotlin yang lebih
-          # baru dari seri yang diminta Flutter bisa aja udah mulai
-          # nge-enforce DSL baru (compilerOptions) secara KETAT, bikin cara
-          # nulis lama (`kotlinOptions { jvmTarget = "..." }`) yang dipake
-          # HAMPIR SEMUA project Flutter existing jadi ERROR, bukan cuma
-          # warning — persis kejadian kayak kasus AGP 9.0 kemarin.
           KOTLIN_MIN_SERIES="2.2"
           LATEST_KOTLIN=$(curl -s https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-gradle-plugin/maven-metadata.xml \
             | grep -oP '(?<=<version>)[^<]+' \
@@ -231,20 +208,12 @@ jobs:
           PYEOF
 
       - name: Lepas SEMUA batasan versi package di pubspec.yaml
-        # INI PERBAIKAN PALING MENYELURUH: daripada nyusul satu-satu tiap ada
-        # package yang ketinggalan (font_awesome_flutter, dst — bisa kejadian
-        # ke package LAIN juga di base project yang beda), di sini LANGSUNG
-        # dilepas SEMUA batasan versi di pubspec.yaml (^X.Y.Z / ">=X.Y.Z
-        # <A.B.C" / dll diganti jadi "any") — biar `pub get` BEBAS milih versi
-        # PALING BARU & PALING KOMPATIBEL buat SEMUA package, apapun batasan
-        # asli yang ditulis programmer project-nya (yang mungkin emang ketulis
-        # pas project itu dibuat, udah lama, dan gak pernah diapdet lagi).
-        #
-        # AMAN buat: dependency biasa ("pkg: ^1.2.3", "pkg: '>=1.0 <2.0'").
-        # DIBIARIN APA ADANYA (gak disentuh): "sdk: flutter" (flutter/
-        # flutter_test SDK bawaan), dependency dari git/path (formatnya beda,
-        # bukan angka versi), dan baris "sdk:" di section environment: (biar
-        # batas minimum Dart SDK-nya sendiri gak ikut kebablasan berubah).
+        # Daripada nyusul satu-satu tiap ada package yang ketinggalan, di
+        # sini LANGSUNG dilepas SEMUA batasan versi di pubspec.yaml (^X.Y.Z
+        # / ">=X.Y.Z <A.B.C" / dll diganti jadi "any") — biar `pub get` BEBAS
+        # milih versi PALING BARU & PALING KOMPATIBEL buat SEMUA package.
+        # DIBIARIN APA ADANYA: "sdk: flutter", dependency git/path, dan
+        # baris "sdk:" di section environment:.
         if: steps.parse.outputs.mode == 'zip'
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: |
@@ -290,16 +259,6 @@ jobs:
           PYEOF
 
       - name: Hapus pubspec.lock lama & resolve dependency FRESH
-        # PENTING: pubspec.lock yang ke-upload bareng project user itu
-        # ke-pin ke versi package SAAT PROJECT-NYA DIBUAT (bisa udah lama
-        # banget) — padahal Flutter SDK yang dipake di CI ini SELALU versi
-        # terbaru ("stable"). Kalau pubspec.lock lama dipertahanin, package
-        # kayak font_awesome_flutter versi lama bisa nyubclass class Flutter
-        # yang di versi SDK sekarang udah jadi "final" (dilarang di-extend),
-        # bikin build gagal — padahal versi TERBARU dari package itu udah
-        # dibenerin sama maintainer-nya buat kompatibel. Solusinya: hapus
-        # pubspec.lock, biar `pub get` resolve ULANG dari nol pake versi
-        # package TERBARU yang beneran kompatibel sama SDK yang dipake.
         if: steps.parse.outputs.mode == 'zip'
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: rm -f pubspec.lock
@@ -309,15 +268,6 @@ jobs:
         run: flutter pub get
 
       - name: Upgrade SEMUA package termasuk major version (jaring pengaman tambahan)
-        # PENTING: `flutter pub get` doang CUMA boleh naik versi package
-        # SELAMA masih sesuai batas yang ditulis di pubspec.yaml (misal
-        # "^10.0.0" artinya CUMA boleh naik sampe versi 10.x, gak boleh ke
-        # 11.x walau 11.x itu yang beneran ngebenerin masalah kompatibilitas
-        # kayak font_awesome_flutter vs IconData final). `pub upgrade
-        # --major-versions` maksa cek & naikin ke major version TERBARU yang
-        # available kalau perlu, ngelewatin batasan lama di pubspec.yaml.
-        # `|| true` di sini SENGAJA: kalau upgrade ini gagal/gak ada yang
-        # bisa dinaikin, build tetep lanjut pake hasil dari `pub get` biasa.
         if: steps.parse.outputs.mode == 'zip'
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: flutter pub upgrade --major-versions || true
@@ -325,19 +275,9 @@ jobs:
       - name: Build APK
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: |
-          # PENTING: "--android-skip-build-dependency-validation" itu flag
-          # RESMI dari Flutter sendiri (disebut di pesan error yang sering
-          # muncul: "Alternatively, use the flag ... to bypass this check").
-          # Dipasang di sini biar KALAU ADA lagi 1 pengecekan versi minimum
-          # yang belum ke-cover sama step upgrade Gradle/AGP/Kotlin di atas
-          # (misal NDK, compileSdk, dll), build TETEP LANJUT — gak berhenti
-          # cuma gara-gara Flutter "sok pilih-pilih" versi, padahal toolchain
-          # sebenarnya udah dimodernin duluan sama step upgrade tadi.
-          #
-          # CATATAN: flag ini CUMA skip validasi versi minimum, BUKAN skip
-          # compile error beneran — kalau project-nya emang ada bug/error
-          # kode asli, build tetep bakal gagal (dan emang HARUS gagal,
-          # itu bug beneran di project-nya, bukan soal versi tooling).
+          # "--android-skip-build-dependency-validation" itu flag RESMI dari
+          # Flutter sendiri — jaring pengaman terakhir kalau ada 1 pengecekan
+          # versi minimum yang belum ke-cover sama step upgrade di atas.
           if [ "${{ steps.parse.outputs.build_type }}" == "debug" ]; then
             flutter build apk --debug --android-skip-build-dependency-validation
           else
