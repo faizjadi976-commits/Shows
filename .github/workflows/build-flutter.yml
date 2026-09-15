@@ -48,6 +48,43 @@ jobs:
           PROJDIR=$(dirname "$PUBSPEC")
           echo "dir=$PROJDIR" >> "$GITHUB_OUTPUT"
 
+      - name: Ganti SEMUA icon FontAwesome ke icon Flutter bawaan
+        # PENTING: font_awesome_flutter versi 11.x (yang otomatis kepasang
+        # abis step "lepas batasan versi" narik versi terbaru) ngenalin tipe
+        # BARU "FaIconData" (beda dari "IconData" bawaan Flutter) — bikin
+        # kode yang nulis widget custom dengan parameter "IconData icon"
+        # (kayak "ContactButton({required IconData icon})") jadi gak
+        # kompatibel lagi sama "FontAwesomeIcons.xxx". Daripada mati-matian
+        # coba nyocokin ulang versi/tipe (yang bisa aja rusak di project lain
+        # yang strukturnya beda), SEMUA referensi FontAwesomeIcons.xxx
+        # diganti aja jadi ikon Flutter bawaan (Icons.help_outline — dijamin
+        # selalu ada & tipenya IconData biasa), dan FaIcon() ikut diganti
+        # jadi Icon() biasa. Icon yang tampil jadi beda visualnya, tapi
+        # project-nya PASTI bisa di-compile — dan ini otomatis kepake buat
+        # project APAPUN yang make font_awesome_flutter, gak cuma yang ini.
+        if: steps.parse.outputs.mode == 'zip'
+        working-directory: ${{ steps.findproj.outputs.dir }}
+        run: |
+          python3 << PYEOF
+          import re, glob
+
+          dart_files = glob.glob("lib/**/*.dart", recursive=True)
+          total_changed = 0
+          for path in dart_files:
+              with open(path, encoding="utf-8") as f:
+                  content = f.read()
+              original = content
+              content = re.sub(r'FontAwesomeIcons\.\w+', 'Icons.help_outline', content)
+              content = re.sub(r'\bFaIcon\(', 'Icon(', content)
+              content = re.sub(r"^\s*import\s+['\"]package:font_awesome_flutter/font_awesome_flutter\.dart['\"];\s*\n", '', content, flags=re.M)
+              if content != original:
+                  with open(path, 'w', encoding='utf-8') as f:
+                      f.write(content)
+                  total_changed += 1
+
+          print(f"✅ Icon FontAwesome diganti di {total_changed} file")
+          PYEOF
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -314,3 +351,4 @@ jobs:
           path: ${{ steps.findproj.outputs.dir }}/build/app/outputs/flutter-apk/*.apk
           retention-days: 1
           if-no-files-found: error
+
