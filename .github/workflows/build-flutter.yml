@@ -272,6 +272,52 @@ jobs:
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: flutter pub upgrade --major-versions || true
 
+      - name: Patch kode Dart yang gak kompatibel sama versi package/Flutter terbaru
+        # Dua error di log GitHub Actions kamu murni dari SOURCE CODE, bukan dari
+        # setup build:
+        #  1) "Member not found: 'visible'" -> Clip.visible GAK ADA di Flutter.
+        #     Enum Clip isinya cuma none/hardEdge/antiAlias/antiAliasWithSaveLayer.
+        #     Padanan "overflow kelihatan" = Clip.none.
+        #  2) "Member not found: 'platform'" -> file_picker 11+ ngapus
+        #     FilePicker.platform.xxx, diganti static FilePicker.xxx. Step
+        #     "lepas batasan versi" bikin pub narik versi terbaru, jadi kode lama
+        #     harus dimigrasi. Cuma dijalankan kalau versi hasil resolve >= 11.
+        if: steps.parse.outputs.mode == 'zip'
+        working-directory: ${{ steps.findproj.outputs.dir }}
+        run: |
+          python3 << 'PYEOF'
+          import re, glob
+
+          fp_major = 0
+          try:
+              lock = open("pubspec.lock", encoding="utf-8").read()
+              m = re.search(r'^  file_picker:\n(?:    .*\n)*?    version: "(\d+)\.', lock, re.M)
+              if m:
+                  fp_major = int(m.group(1))
+          except FileNotFoundError:
+              pass
+          print(f"file_picker major version terdeteksi: {fp_major or '(gak dipakai)'}")
+
+          n_clip = n_fp = 0
+          for path in glob.glob("lib/**/*.dart", recursive=True):
+              with open(path, encoding="utf-8") as f:
+                  src = f.read()
+              out = re.sub(r'\bClip\s*\.\s*visible\b', 'Clip.none', src)
+              if out != src:
+                  n_clip += 1
+              if fp_major >= 11:
+                  out2 = re.sub(r'\bFilePicker\s*\.\s*platform\s*\.\s*', 'FilePicker.', out)
+                  if out2 != out:
+                      n_fp += 1
+                  out = out2
+              if out != src:
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.write(out)
+
+          print(f"✅ Clip.visible -> Clip.none di {n_clip} file")
+          print(f"✅ FilePicker.platform.* -> FilePicker.* di {n_fp} file")
+          PYEOF
+
       - name: Build APK
         working-directory: ${{ steps.findproj.outputs.dir }}
         run: |
@@ -279,9 +325,39 @@ jobs:
           # Flutter sendiri — jaring pengaman terakhir kalau ada 1 pengecekan
           # versi minimum yang belum ke-cover sama step upgrade di atas.
           if [ "${{ steps.parse.outputs.build_type }}" == "debug" ]; then
-            flutter build apk --debug --android-skip-build-dependency-validation
+            MODE_FLAG="--debug"
           else
-            flutter build apk --release --android-skip-build-dependency-validation
+            MODE_FLAG="--release"
+          fi
+
+          set +e
+          flutter build apk $MODE_FLAG --android-skip-build-dependency-validation 2>&1 | tee /tmp/build.log
+          STATUS=${PIPESTATUS[0]}
+          set -e
+
+          # Warning di log: "permission_handler_android requires Android SDK
+          # version 37 or higher". Flag skip di atas cuma nge-skip pengecekan di
+          # sisi Flutter; Gradle (checkAarMetadata) masih bisa gagal kalau
+          # compileSdk app < yang diminta plugin. Kalau itu penyebabnya, naikin
+          # compileSdk ke 37 lalu coba SEKALI lagi.
+          if [ "$STATUS" -ne 0 ] && grep -qiE "compileSdk|requires Android SDK version|compile against version" /tmp/build.log; then
+            echo "::warning::Build gagal karena compileSdk — naikin ke 37 lalu retry sekali."
+            python3 << 'PYEOF'
+          import re, glob
+          for path in glob.glob("android/app/build.gradle*"):
+              with open(path, encoding="utf-8") as f:
+                  src = f.read()
+              out = re.sub(r'(compileSdk(?:Version)?\s*=?\s*)(?:flutter\.compileSdkVersion|\d+)', r'\g<1>37', src)
+              if out != src:
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.write(out)
+                  print(f"✅ compileSdk -> 37 di {path}")
+          with open("android/gradle.properties", "a", encoding="utf-8") as f:
+              f.write("\nandroid.suppressUnsupportedCompileSdk=37\n")
+          PYEOF
+            flutter build apk $MODE_FLAG --android-skip-build-dependency-validation
+          elif [ "$STATUS" -ne 0 ]; then
+            exit "$STATUS"
           fi
 
       - name: Upload APK sebagai artifact (dibaca balik sama bot)
@@ -291,4 +367,3 @@ jobs:
           path: ${{ steps.findproj.outputs.dir }}/build/app/outputs/flutter-apk/*.apk
           retention-days: 1
           if-no-files-found: error
-
